@@ -11,6 +11,8 @@ use cfg_if::cfg_if;
 use crate::io::ReadBuf;
 
 mod buffered;
+#[cfg(feature = "_rt-tokio")]
+mod staggered;
 
 pub trait Socket: Send + Sync + Unpin + 'static {
     fn try_read(&mut self, buf: &mut dyn ReadBuf) -> io::Result<usize>;
@@ -179,6 +181,40 @@ impl<S: Socket + ?Sized> Socket for Box<S> {
     fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         (**self).poll_shutdown(cx)
     }
+}
+
+/// Opens a TCP socket using staggered, bounded attempts on the Tokio runtime.
+///
+/// Starts an alternate address after 250 ms, with at most four active attempts
+/// and a ten-second deadline per attempt. TLS is applied only to the winning
+/// socket. Other runtimes retain their existing connection behavior.
+pub async fn connect_tcp_staggered<Ws: WithSocket>(
+    host: &str,
+    port: u16,
+    with_socket: Ws,
+) -> crate::Result<Ws::Output> {
+    #[cfg(feature = "_rt-tokio")]
+    if crate::rt::rt_tokio::available() {
+        let mut addresses = tokio::net::lookup_host((host, port)).await?.collect();
+        let socket = staggered::connect(&mut addresses, |address| async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tokio::net::TcpStream::connect(address),
+            )
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP connection timed out"))?
+        })
+        .await
+        .unwrap_or_else(|| {
+            Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "Hostname did not resolve to any addresses",
+            ))
+        })?;
+        return Ok(with_socket.with_socket(socket).await);
+    }
+
+    connect_tcp(host, port, with_socket).await
 }
 
 pub async fn connect_tcp<Ws: WithSocket>(

@@ -25,7 +25,7 @@ _rt-async-io = ["async-io", "async-fs"] # see note at async-fs declaration
 _rt-async-std = ["async-std", "_rt-async-io"]
 _rt-async-task = ["async-task"]
 _rt-smol = ["smol", "_rt-async-io", "_rt-async-task"]
-_rt-tokio = ["tokio", "tokio-stream"]
+_rt-tokio = ["tokio", "tokio/macros", "tokio-stream"]
 
 _tls-native-tls = ["native-tls"]
 _tls-rustls-aws-lc-rs = ["_tls-rustls", "rustls/aws-lc-rs", "webpki-roots"]
@@ -106,7 +106,8 @@ hashbrown = "0.16.0"
 thiserror.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.25.0", features = ["rt"] }
+futures-util = { version = "0.3.32", default-features = false, features = ["async-await"] }
+tokio = { version = "1.25.0", features = ["rt", "test-util"] }
 
 [dev-dependencies.sqlx]
 # FIXME: https://github.com/rust-lang/cargo/issues/15622
