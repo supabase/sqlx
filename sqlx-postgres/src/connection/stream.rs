@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::ops::{ControlFlow, Deref, DerefMut};
 use std::str::FromStr;
 
@@ -42,11 +43,15 @@ pub struct PgStream {
 
 impl PgStream {
     pub(super) async fn connect(options: &PgConnectOptions) -> Result<Self, Error> {
+        // An invalid environment override must fail before DNS, TLS, or authentication.
+        if let Some(address) = &options.host_addr {
+            address.parse::<IpAddr>().map_err(Error::config)?;
+        }
         let socket_result = match options.fetch_socket() {
             Some(ref path) => net::connect_uds(path, MaybeUpgradeTls(options)).await?,
             None => {
-                net::connect_tcp_staggered(&options.host, options.port, MaybeUpgradeTls(options))
-                    .await?
+                let address = options.host_addr.as_deref().unwrap_or(&options.host);
+                net::connect_tcp_staggered(address, options.port, MaybeUpgradeTls(options)).await?
             }
         };
 

@@ -2,8 +2,12 @@ use crate::error::Error;
 use crate::{PgConnectOptions, PgSslMode};
 use sqlx_core::percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use sqlx_core::Url;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
+#[cfg(test)]
+use std::{env, process::Command};
+#[cfg(test)]
+use {futures_util::FutureExt, sqlx_core::connection::ConnectOptions};
 
 impl PgConnectOptions {
     pub(crate) fn parse_from_url(url: &Url) -> Result<Self, Error> {
@@ -13,7 +17,12 @@ impl PgConnectOptions {
             let host_decoded = percent_decode_str(host);
             options = match host_decoded.clone().next() {
                 Some(b'/') => options.socket(&*host_decoded.decode_utf8().map_err(Error::config)?),
-                _ => options.host(host),
+                _ => options.host(
+                    host.strip_prefix('[')
+                        .and_then(|host| host.strip_suffix(']'))
+                        .filter(|host| host.parse::<Ipv6Addr>().is_ok())
+                        .unwrap_or(host),
+                ),
             }
         }
 
@@ -75,8 +84,7 @@ impl PgConnectOptions {
                 }
 
                 "hostaddr" => {
-                    value.parse::<IpAddr>().map_err(Error::config)?;
-                    options = options.host(&value)
+                    options = options.host_addr(value.parse::<IpAddr>().map_err(Error::config)?);
                 }
 
                 "port" => options = options.port(value.parse().map_err(Error::config)?),
@@ -115,10 +123,14 @@ impl PgConnectOptions {
 
     pub(crate) fn build_url(&self) -> Url {
         let host = match &self.socket {
-            Some(socket) => {
+            Some(socket) if self.host_addr.is_none() => {
                 utf8_percent_encode(&socket.to_string_lossy(), NON_ALPHANUMERIC).to_string()
             }
-            None => self.host.to_owned(),
+            _ if self.get_host().starts_with('/') => {
+                utf8_percent_encode(self.get_host(), NON_ALPHANUMERIC).to_string()
+            }
+            _ if self.get_host().parse::<Ipv6Addr>().is_ok() => format!("[{}]", self.get_host()),
+            _ => self.get_host().to_owned(),
         };
 
         let mut url = Url::parse(&format!(
@@ -145,6 +157,10 @@ impl PgConnectOptions {
             PgSslMode::VerifyFull => "verify-full",
         };
         url.query_pairs_mut().append_pair("sslmode", ssl_mode);
+
+        if let Some(host_addr) = &self.host_addr {
+            url.query_pairs_mut().append_pair("hostaddr", host_addr);
+        }
 
         if let Some(ssl_root_cert) = &self.ssl_root_cert {
             url.query_pairs_mut()
@@ -199,11 +215,103 @@ fn it_parses_host_correctly_from_parameter() {
 
 #[test]
 fn it_parses_hostaddr_correctly_from_parameter() {
-    let url = "postgres:///?hostaddr=8.8.8.8";
+    let url = "postgres://example.com/?hostaddr=192.0.2.10";
     let opts = PgConnectOptions::from_str(url).unwrap();
 
     assert_eq!(None, opts.socket);
-    assert_eq!("8.8.8.8", &opts.host);
+    assert_eq!("example.com", &opts.host);
+    assert_eq!(Some("192.0.2.10"), opts.get_host_addr());
+}
+
+#[test]
+fn hostaddr_preserves_identity_and_round_trips() {
+    for address in ["192.0.2.10", "2001:db8::10"] {
+        for parameters in [
+            format!("host=example.com&hostaddr={address}"),
+            format!("hostaddr={address}&host=example.com"),
+        ] {
+            let options: PgConnectOptions = format!("postgres://other.example/?{parameters}")
+                .parse()
+                .unwrap();
+            let restored = PgConnectOptions::parse_from_url(&options.build_url()).unwrap();
+            assert_eq!(restored.get_host(), "example.com");
+            assert_eq!(restored.get_host_addr(), Some(address));
+        }
+    }
+    assert!("postgres://example.com/?hostaddr=invalid.example"
+        .parse::<PgConnectOptions>()
+        .is_err());
+}
+
+#[test]
+fn hostaddr_overrides_sockets_and_can_be_cleared() {
+    let options = PgConnectOptions::new_without_pgpass()
+        .host("example.com")
+        .socket("/tmp")
+        .host_addr("192.0.2.10".parse::<IpAddr>().unwrap());
+    assert_eq!(options.fetch_socket(), None);
+    let restored = PgConnectOptions::parse_from_url(&options.build_url()).unwrap();
+    assert_eq!(restored.get_host(), "example.com");
+    assert_eq!(restored.get_host_addr(), Some("192.0.2.10"));
+    assert!(options.host_addr(None).fetch_socket().is_some());
+}
+
+#[test]
+fn hostaddr_environment_is_independent() {
+    if env::var_os("SQLX_HOSTADDR_TEST_CHILD").is_none() {
+        for address in ["192.0.2.10", "2001:db8::10", "invalid.example"] {
+            for host in [None, Some(""), Some("example.com"), Some("/private/tmp")] {
+                let mut child = Command::new(env::current_exe().unwrap());
+                child
+                    .args([
+                        "--exact",
+                        "options::parse::hostaddr_environment_is_independent",
+                    ])
+                    .env("SQLX_HOSTADDR_TEST_CHILD", "1")
+                    .env("PGHOSTADDR", address);
+                if let Some(host) = host {
+                    child.env("PGHOST", host);
+                } else {
+                    child.env_remove("PGHOST");
+                }
+                let output = child.output().unwrap();
+                assert!(output.status.success());
+                assert!(String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains("1 passed;"));
+            }
+        }
+        return;
+    }
+    let address = env::var("PGHOSTADDR").unwrap();
+    let options = PgConnectOptions::new_without_pgpass();
+    let expected = match env::var("PGHOST").as_deref() {
+        Ok("example.com") => "example.com",
+        _ => &address,
+    };
+    assert_eq!(options.get_host(), expected);
+    assert_eq!(options.get_host_addr(), Some(address.as_str()));
+    if address == "invalid.example" {
+        let error = options.connect().now_or_never().unwrap().unwrap_err();
+        assert!(matches!(error, Error::Configuration(_)));
+    } else {
+        let restored = PgConnectOptions::parse_from_url(&options.build_url()).unwrap();
+        assert_eq!(restored.get_host(), expected);
+        assert_eq!(restored.get_host_addr(), Some(address.as_str()));
+        let from_url: PgConnectOptions =
+            format!("postgres:///?hostaddr={address}").parse().unwrap();
+        assert_eq!(from_url.get_host(), expected);
+        let from_setter = options
+            .clone()
+            .host_addr(address.parse::<IpAddr>().unwrap());
+        assert_eq!(from_setter.get_host(), expected);
+    }
+    assert_eq!(options.clone().host_addr(None).get_host_addr(), None);
+    let options: PgConnectOptions = "postgres://other.example/?hostaddr=192.0.2.20"
+        .parse()
+        .unwrap();
+    assert_eq!(options.get_host(), "other.example");
+    assert_eq!(options.get_host_addr(), Some("192.0.2.20"));
 }
 
 #[test]
