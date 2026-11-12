@@ -28,6 +28,36 @@ async fn it_connects() -> anyhow::Result<()> {
     Ok(())
 }
 
+// These controls use the same server and CA as the positive connection test.
+// Only the asserted identity or trust root changes.
+#[sqlx_macros::test]
+#[ignore = "requires the Supabase driver CI certificate with only a localhost DNS SAN"]
+async fn tls_hostname_mismatch_is_rejected() -> anyhow::Result<()> {
+    let options = env::var("DATABASE_URL")?
+        .parse::<PgConnectOptions>()?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .host("127.0.0.1");
+    let error = PgConnection::connect_with(&options).await.unwrap_err();
+    assert!(
+        matches!(error, sqlx::Error::Io(cause) if cause.kind() == std::io::ErrorKind::InvalidData)
+    );
+    Ok(())
+}
+
+#[sqlx_macros::test]
+#[ignore = "requires the Supabase driver CI certificate with only a localhost DNS SAN"]
+async fn tls_untrusted_ca_is_rejected() -> anyhow::Result<()> {
+    let options = env::var("DATABASE_URL")?
+        .parse::<PgConnectOptions>()?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert("tests/certs/rsa/ca.crt");
+    let error = PgConnection::connect_with(&options).await.unwrap_err();
+    assert!(
+        matches!(error, sqlx::Error::Io(cause) if cause.kind() == std::io::ErrorKind::InvalidData)
+    );
+    Ok(())
+}
+
 #[sqlx_macros::test]
 async fn it_can_select_void() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
