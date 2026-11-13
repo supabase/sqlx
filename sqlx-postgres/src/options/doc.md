@@ -29,7 +29,7 @@ if a parameter is not passed in via URL, it is populated by reading
 | `password`         | `PGPASSWORD`         | Read from [`passfile`], if it exists.                       |
 | [`passfile`]       | `PGPASSFILE`         | `~/.pgpass` or `%APPDATA%\postgresql\pgpass.conf` (Windows) |
 | `host`             | `PGHOST`             | See [Note: Default Host](#note-default-host).               |
-| `hostaddr`         | `PGHOSTADDR`         | See [Note: Default Host](#note-default-host).               |
+| `hostaddr`         | `PGHOSTADDR`         | Optional numeric TCP address; `host` remains the TLS identity. |
 | `port`             | `PGPORT`             | `5432`                                                      |
 | `dbname`           | `PGDATABASE`         | Unset; defaults to the username server-side.                |
 | `sslmode`          | `PGSSLMODE`          | `prefer`. See [`PgSslMode`] for details.                    |
@@ -40,6 +40,14 @@ if a parameter is not passed in via URL, it is populated by reading
 | `application_name` | `PGAPPNAME`          | Unset.                                                      |
 
 [`passfile`] handling may be bypassed using [`PgConnectOptions::new_without_pgpass()`].
+
+When `hostaddr` is set, SQLx connects to that address without resolving `host` or using
+a Unix-domain socket. TLS hostname verification and `passfile` matching still use `host`.
+Set both when using a numeric address with a certificate issued for a DNS hostname.
+Without an explicit TCP hostname, `hostaddr` supplies the identity for TLS and `passfile`.
+An implicit `localhost` or Unix-domain socket default is not used as the TCP identity.
+An explicit `host` does not clear an inherited `PGHOSTADDR`; use
+[`PgConnectOptions::clear_hostaddr()`][Self::clear_hostaddr] to clear it.
 
 ## SQLx-Specific
 SQLx also parses some bespoke parameters. These are _not_ configurable by environment variable.

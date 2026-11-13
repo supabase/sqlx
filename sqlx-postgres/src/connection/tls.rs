@@ -54,7 +54,7 @@ async fn maybe_upgrade<S: Socket>(
     let config = TlsConfig {
         accept_invalid_certs,
         accept_invalid_hostnames,
-        hostname: &options.host,
+        hostname: options.get_host(),
         root_cert_path: options.ssl_root_cert.as_ref(),
         client_cert_path: options.ssl_client_cert.as_ref(),
         client_key_path: options.ssl_client_key.as_ref(),

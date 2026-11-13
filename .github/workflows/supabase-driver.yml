@@ -85,7 +85,7 @@ jobs:
               --features postgres,macros,runtime-tokio,tls-rustls-ring \
               --test postgres -- --exact "$test"
           done
-          for test in tls_hostname_mismatch_is_rejected tls_untrusted_ca_is_rejected; do
+          for test in tls_hostname_mismatch_is_rejected tls_untrusted_ca_is_rejected tls_hostaddr_preserves_verification; do
             cargo +1.95.0 test --locked --no-default-features \
               --features postgres,macros,runtime-tokio,tls-rustls-ring \
               --test postgres -- --ignored --exact "$test"

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::env::var;
 use std::fmt::{self, Display, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 pub use ssl_mode::PgSslMode;
@@ -16,6 +17,10 @@ mod ssl_mode;
 #[derive(Debug, Clone)]
 pub struct PgConnectOptions {
     pub(crate) host: String,
+    // An implicit localhost/socket default is not an asserted TLS hostname.
+    host_is_default: bool,
+    // Keep malformed environment input until connecting can return a configuration error.
+    pub(crate) hostaddr: Option<String>,
     pub(crate) port: u16,
     pub(crate) socket: Option<PathBuf>,
     pub(crate) username: String,
@@ -59,10 +64,9 @@ impl PgConnectOptions {
             .and_then(|v| v.parse().ok())
             .unwrap_or(5432);
 
-        let host = var("PGHOSTADDR")
-            .ok()
-            .or_else(|| var("PGHOST").ok())
-            .unwrap_or_else(|| default_host(port));
+        let host = var("PGHOST").ok();
+        let host_is_default = host.is_none();
+        let host = host.unwrap_or_else(|| default_host(port));
 
         let username = if let Ok(username) = var("PGUSER") {
             username
@@ -78,6 +82,8 @@ impl PgConnectOptions {
         PgConnectOptions {
             port,
             host,
+            host_is_default,
+            hostaddr: var("PGHOSTADDR").ok().filter(|value| !value.is_empty()),
             socket: None,
             username,
             password: var("PGPASSWORD").ok(),
@@ -103,7 +109,7 @@ impl PgConnectOptions {
     pub(crate) fn apply_pgpass(mut self) -> Self {
         if self.password.is_none() {
             self.password = pgpass::load_password(
-                &self.host,
+                self.get_host(),
                 self.port,
                 &self.username,
                 self.database.as_deref(),
@@ -131,6 +137,23 @@ impl PgConnectOptions {
     /// ```
     pub fn host(mut self, host: &str) -> Self {
         host.clone_into(&mut self.host);
+        self.host_is_default = false;
+        self
+    }
+
+    /// Override hostname resolution with a preset IP address.
+    ///
+    /// [`Self::host`] remains the identity for TLS and `passfile` matching. An address
+    /// override bypasses DNS and Unix-domain sockets. Setting [`Self::host`] does not
+    /// clear it; use [`Self::clear_hostaddr`] to clear an inherited `PGHOSTADDR`.
+    pub fn hostaddr(mut self, hostaddr: impl Into<IpAddr>) -> Self {
+        self.hostaddr = Some(hostaddr.into().to_string());
+        self
+    }
+
+    /// Clears an address override, including malformed input inherited from `PGHOSTADDR`.
+    pub fn clear_hostaddr(mut self) -> Self {
+        self.hostaddr = None;
         self
     }
 
@@ -454,7 +477,11 @@ impl PgConnectOptions {
 
     /// We try using a socket if hostname starts with `/` or if socket parameter
     /// is specified.
-    pub(crate) fn fetch_socket(&self) -> Option<String> {
+    pub(crate) fn make_socket_path(&self) -> Option<String> {
+        if self.hostaddr.is_some() {
+            return None;
+        }
+
         match self.socket {
             Some(ref socket) => {
                 let full_path = format!("{}/.s.PGSQL.{}", socket.display(), self.port);
@@ -472,6 +499,9 @@ impl PgConnectOptions {
 impl PgConnectOptions {
     /// Get the current host.
     ///
+    /// If only a numeric address or a Unix socket path is configured, the address override
+    /// supplies the TCP server identity. Otherwise the explicit hostname is preserved.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -481,7 +511,11 @@ impl PgConnectOptions {
     /// assert_eq!(options.get_host(), "127.0.0.1");
     /// ```
     pub fn get_host(&self) -> &str {
-        &self.host
+        if self.host_is_default || self.host.is_empty() || self.host.starts_with('/') {
+            self.hostaddr.as_deref().unwrap_or(&self.host)
+        } else {
+            &self.host
+        }
     }
 
     /// Get the server's port.
