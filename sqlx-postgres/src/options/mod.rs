@@ -19,7 +19,8 @@ pub struct PgConnectOptions {
     pub(crate) host: String,
     // An implicit localhost/socket default is not an asserted TLS hostname.
     host_is_default: bool,
-    pub(crate) host_addr: Option<String>,
+    // Keep malformed environment input until connecting can return a configuration error.
+    pub(crate) hostaddr: Option<String>,
     pub(crate) port: u16,
     pub(crate) socket: Option<PathBuf>,
     pub(crate) username: String,
@@ -82,8 +83,7 @@ impl PgConnectOptions {
             port,
             host,
             host_is_default,
-            // Retain invalid environment values so connecting fails instead of changing targets.
-            host_addr: var("PGHOSTADDR").ok().filter(|value| !value.is_empty()),
+            hostaddr: var("PGHOSTADDR").ok().filter(|value| !value.is_empty()),
             socket: None,
             username,
             password: var("PGPASSWORD").ok(),
@@ -141,12 +141,19 @@ impl PgConnectOptions {
         self
     }
 
-    /// Sets the numeric TCP address independently of the hostname used for TLS and `passfile`.
+    /// Override hostname resolution with a preset IP address.
     ///
-    /// This bypasses hostname resolution and Unix-domain sockets. Pass `None` to clear an
-    /// address inherited from `PGHOSTADDR`. Setting [`Self::host`] does not clear this override.
-    pub fn host_addr(mut self, host_addr: impl Into<Option<IpAddr>>) -> Self {
-        self.host_addr = host_addr.into().map(|address| address.to_string());
+    /// [`Self::host`] remains the identity for TLS and `passfile` matching. An address
+    /// override bypasses DNS and Unix-domain sockets. Setting [`Self::host`] does not
+    /// clear it; use [`Self::clear_hostaddr`] to clear an inherited `PGHOSTADDR`.
+    pub fn hostaddr(mut self, hostaddr: impl Into<IpAddr>) -> Self {
+        self.hostaddr = Some(hostaddr.into().to_string());
+        self
+    }
+
+    /// Clears an address override, including malformed input inherited from `PGHOSTADDR`.
+    pub fn clear_hostaddr(mut self) -> Self {
+        self.hostaddr = None;
         self
     }
 
@@ -470,8 +477,8 @@ impl PgConnectOptions {
 
     /// We try using a socket if hostname starts with `/` or if socket parameter
     /// is specified.
-    pub(crate) fn fetch_socket(&self) -> Option<String> {
-        if self.host_addr.is_some() {
+    pub(crate) fn make_socket_path(&self) -> Option<String> {
+        if self.hostaddr.is_some() {
             return None;
         }
 
@@ -505,18 +512,10 @@ impl PgConnectOptions {
     /// ```
     pub fn get_host(&self) -> &str {
         if self.host_is_default || self.host.is_empty() || self.host.starts_with('/') {
-            self.host_addr.as_deref().unwrap_or(&self.host)
+            self.hostaddr.as_deref().unwrap_or(&self.host)
         } else {
             &self.host
         }
-    }
-
-    /// Gets the TCP address override, if any.
-    ///
-    /// Values inherited from `PGHOSTADDR` are validated when connecting. Invalid addresses
-    /// cause a configuration error rather than falling back to hostname resolution.
-    pub fn get_host_addr(&self) -> Option<&str> {
-        self.host_addr.as_deref()
     }
 
     /// Get the server's port.

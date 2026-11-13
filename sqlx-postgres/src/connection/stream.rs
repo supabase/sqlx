@@ -14,7 +14,7 @@ use crate::message::{
     BackendMessage, BackendMessageFormat, EncodeMessage, FrontendMessage, Notice, Notification,
     ParameterStatus, ReceivedMessage,
 };
-use crate::net::{self, BufferedSocket, Socket};
+use crate::net::{self, BufferedSocket, Socket, SocketHost};
 use crate::{PgConnectOptions, PgDatabaseError, PgSeverity};
 
 // the stream is a separate type from the connection to uphold the invariant where an instantiated
@@ -44,13 +44,17 @@ pub struct PgStream {
 impl PgStream {
     pub(super) async fn connect(options: &PgConnectOptions) -> Result<Self, Error> {
         // An invalid environment override must fail before DNS, TLS, or authentication.
-        if let Some(address) = &options.host_addr {
-            address.parse::<IpAddr>().map_err(Error::config)?;
-        }
-        let socket_result = match options.fetch_socket() {
+        let hostaddr = options
+            .hostaddr
+            .as_deref()
+            .map(str::parse::<IpAddr>)
+            .transpose()
+            .map_err(Error::config)?;
+        let socket_result = match options.make_socket_path() {
             Some(ref path) => net::connect_uds(path, MaybeUpgradeTls(options)).await?,
             None => {
-                let address = options.host_addr.as_deref().unwrap_or(&options.host);
+                let address =
+                    hostaddr.map_or_else(|| SocketHost::Name(&options.host), SocketHost::Addr);
                 net::connect_tcp_staggered(address, options.port, MaybeUpgradeTls(options)).await?
             }
         };

@@ -47,7 +47,7 @@ Set both when using a numeric address with a certificate issued for a DNS hostna
 Without an explicit TCP hostname, `hostaddr` supplies the identity for TLS and `passfile`.
 An implicit `localhost` or Unix-domain socket default is not used as the TCP identity.
 An explicit `host` does not clear an inherited `PGHOSTADDR`; use
-[`PgConnectOptions::host_addr(None)`][Self::host_addr] to clear it.
+[`PgConnectOptions::clear_hostaddr()`][Self::clear_hostaddr] to clear it.
 
 ## SQLx-Specific
 SQLx also parses some bespoke parameters. These are _not_ configurable by environment variable.

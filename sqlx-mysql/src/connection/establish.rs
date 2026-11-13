@@ -4,7 +4,7 @@ use bytes::Bytes;
 use crate::common::StatementCache;
 use crate::connection::{tls, MySqlConnectionInner, MySqlStream, MAX_PACKET_SIZE};
 use crate::error::Error;
-use crate::net::{Socket, WithSocket};
+use crate::net::{Socket, SocketHost, WithSocket};
 use crate::protocol::connect::{
     AuthSwitchRequest, AuthSwitchResponse, Handshake, HandshakeResponse,
 };
@@ -17,7 +17,10 @@ impl MySqlConnection {
 
         let handshake = match &options.socket {
             Some(path) => crate::net::connect_uds(path, do_handshake).await?,
-            None => crate::net::connect_tcp(&options.host, options.port, do_handshake).await?,
+            None => {
+                crate::net::connect_tcp(SocketHost::Name(&options.host), options.port, do_handshake)
+                    .await?
+            }
         };
 
         let stream = handshake?;

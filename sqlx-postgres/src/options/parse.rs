@@ -84,7 +84,7 @@ impl PgConnectOptions {
                 }
 
                 "hostaddr" => {
-                    options = options.host_addr(value.parse::<IpAddr>().map_err(Error::config)?);
+                    options = options.hostaddr(value.parse::<IpAddr>().map_err(Error::config)?);
                 }
 
                 "port" => options = options.port(value.parse().map_err(Error::config)?),
@@ -123,7 +123,7 @@ impl PgConnectOptions {
 
     pub(crate) fn build_url(&self) -> Url {
         let host = match &self.socket {
-            Some(socket) if self.host_addr.is_none() => {
+            Some(socket) if self.hostaddr.is_none() => {
                 utf8_percent_encode(&socket.to_string_lossy(), NON_ALPHANUMERIC).to_string()
             }
             _ if self.get_host().starts_with('/') => {
@@ -158,7 +158,7 @@ impl PgConnectOptions {
         };
         url.query_pairs_mut().append_pair("sslmode", ssl_mode);
 
-        if let Some(host_addr) = &self.host_addr {
+        if let Some(host_addr) = &self.hostaddr {
             url.query_pairs_mut().append_pair("hostaddr", host_addr);
         }
 
@@ -220,7 +220,7 @@ fn it_parses_hostaddr_correctly_from_parameter() {
 
     assert_eq!(None, opts.socket);
     assert_eq!("example.com", &opts.host);
-    assert_eq!(Some("192.0.2.10"), opts.get_host_addr());
+    assert_eq!(Some("192.0.2.10"), opts.hostaddr.as_deref());
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn hostaddr_preserves_identity_and_round_trips() {
                 .unwrap();
             let restored = PgConnectOptions::parse_from_url(&options.build_url()).unwrap();
             assert_eq!(restored.get_host(), "example.com");
-            assert_eq!(restored.get_host_addr(), Some(address));
+            assert_eq!(restored.hostaddr.as_deref(), Some(address));
         }
     }
     assert!("postgres://example.com/?hostaddr=invalid.example"
@@ -248,12 +248,12 @@ fn hostaddr_overrides_sockets_and_can_be_cleared() {
     let options = PgConnectOptions::new_without_pgpass()
         .host("example.com")
         .socket("/tmp")
-        .host_addr("192.0.2.10".parse::<IpAddr>().unwrap());
-    assert_eq!(options.fetch_socket(), None);
+        .hostaddr("192.0.2.10".parse::<IpAddr>().unwrap());
+    assert_eq!(options.make_socket_path(), None);
     let restored = PgConnectOptions::parse_from_url(&options.build_url()).unwrap();
     assert_eq!(restored.get_host(), "example.com");
-    assert_eq!(restored.get_host_addr(), Some("192.0.2.10"));
-    assert!(options.host_addr(None).fetch_socket().is_some());
+    assert_eq!(restored.hostaddr.as_deref(), Some("192.0.2.10"));
+    assert!(options.clear_hostaddr().make_socket_path().is_some());
 }
 
 #[test]
@@ -290,28 +290,26 @@ fn hostaddr_environment_is_independent() {
         _ => &address,
     };
     assert_eq!(options.get_host(), expected);
-    assert_eq!(options.get_host_addr(), Some(address.as_str()));
+    assert_eq!(options.hostaddr.as_deref(), Some(address.as_str()));
     if address == "invalid.example" {
         let error = options.connect().now_or_never().unwrap().unwrap_err();
         assert!(matches!(error, Error::Configuration(_)));
     } else {
         let restored = PgConnectOptions::parse_from_url(&options.build_url()).unwrap();
         assert_eq!(restored.get_host(), expected);
-        assert_eq!(restored.get_host_addr(), Some(address.as_str()));
+        assert_eq!(restored.hostaddr.as_deref(), Some(address.as_str()));
         let from_url: PgConnectOptions =
             format!("postgres:///?hostaddr={address}").parse().unwrap();
         assert_eq!(from_url.get_host(), expected);
-        let from_setter = options
-            .clone()
-            .host_addr(address.parse::<IpAddr>().unwrap());
+        let from_setter = options.clone().hostaddr(address.parse::<IpAddr>().unwrap());
         assert_eq!(from_setter.get_host(), expected);
     }
-    assert_eq!(options.clone().host_addr(None).get_host_addr(), None);
+    assert_eq!(options.clone().clear_hostaddr().hostaddr.as_deref(), None);
     let options: PgConnectOptions = "postgres://other.example/?hostaddr=192.0.2.20"
         .parse()
         .unwrap();
     assert_eq!(options.get_host(), "other.example");
-    assert_eq!(options.get_host_addr(), Some("192.0.2.20"));
+    assert_eq!(options.hostaddr.as_deref(), Some("192.0.2.20"));
 }
 
 #[test]

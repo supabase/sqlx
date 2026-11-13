@@ -66,7 +66,7 @@ async fn tls_hostaddr_preserves_verification() -> anyhow::Result<()> {
         .parse::<PgConnectOptions>()?
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull);
     for address in ["127.0.0.1", "::1"] {
-        let options = options.clone().host_addr(address.parse::<IpAddr>()?);
+        let options = options.clone().hostaddr(address.parse::<IpAddr>()?);
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .connect_with(options.clone())
