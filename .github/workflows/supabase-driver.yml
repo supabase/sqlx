@@ -53,20 +53,15 @@ jobs:
         run: >-
           cargo +1.95.0 check --locked -p sqlx-core -p sqlx-mysql --lib
           --no-default-features --features sqlx-core/_rt-tokio
-      - name: Create hostname-verification test certificate
+      - name: Generate disposable TLS certificates
+        working-directory: tests/certs
         run: |
-          openssl req -new -key tests/certs/keys/server.key -subj /CN=localhost \
-            -out "$RUNNER_TEMP/server.csr"
-          printf '%s\n' 'subjectAltName=DNS:localhost' \
-            'basicConstraints=critical,CA:FALSE' 'extendedKeyUsage=serverAuth' \
-            > "$RUNNER_TEMP/server.ext"
-          openssl x509 -req -in "$RUNNER_TEMP/server.csr" -CA tests/certs/ca.crt \
-            -CAkey tests/certs/keys/ca.key -set_serial 2 -days 1 \
-            -extfile "$RUNNER_TEMP/server.ext" -out "$RUNNER_TEMP/server.crt"
+          ./gen-certs.sh
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=untrusted.test \
+            -keyout /dev/null -out "$RUNNER_TEMP/untrusted.crt"
       - name: Start PostgreSQL fixture
         run: |
           docker compose -f tests/docker-compose.yml run -d -p 5432:5432 \
-            -v "$RUNNER_TEMP/server.crt:/var/lib/postgresql/server.crt:ro" \
             --name supabase-driver-postgres postgres_17
           for _ in {1..60}; do
             if docker exec supabase-driver-postgres pg_isready -h 127.0.0.1; then
@@ -78,14 +73,15 @@ jobs:
           exit 1
       - name: PostgreSQL connection and pool tests with verified TLS
         env:
-          DATABASE_URL: postgres://postgres:password@localhost:5432/sqlx?sslmode=verify-full&sslrootcert=.%2Ftests%2Fcerts%2Fca.crt
+          DATABASE_URL: postgres://postgres:password@sqlx.test:5432/sqlx?hostaddr=127.0.0.1&sslmode=verify-full&sslrootcert=.%2Ftests%2Fcerts%2Fca.crt
+          SQLX_TEST_UNTRUSTED_CA: ${{ runner.temp }}/untrusted.crt
         run: |
           for test in it_connects it_pings it_executes_with_pool it_can_fail_and_recover_with_pool; do
             cargo +1.95.0 test --locked --no-default-features \
               --features postgres,macros,runtime-tokio,tls-rustls-ring \
               --test postgres -- --exact "$test"
           done
-          for test in tls_hostname_mismatch_is_rejected tls_untrusted_ca_is_rejected; do
+          for test in tls_hostname_mismatch_is_rejected tls_untrusted_ca_is_rejected tls_hostaddr_preserves_verification; do
             cargo +1.95.0 test --locked --no-default-features \
               --features postgres,macros,runtime-tokio,tls-rustls-ring \
               --test postgres -- --ignored --exact "$test"
