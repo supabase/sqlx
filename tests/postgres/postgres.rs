@@ -10,6 +10,7 @@ use sqlx_core::sql_str::AssertSqlSafe;
 use sqlx_core::{bytes::Bytes, error::BoxDynError};
 use sqlx_test::{new, pool, setup_if_needed};
 use std::env;
+use std::net::IpAddr;
 use std::pin::{pin, Pin};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +56,48 @@ async fn tls_untrusted_ca_is_rejected() -> anyhow::Result<()> {
     assert!(
         matches!(error, sqlx::Error::Io(cause) if cause.kind() == std::io::ErrorKind::InvalidData)
     );
+    Ok(())
+}
+
+#[sqlx_macros::test]
+#[ignore = "requires the Supabase driver TLS fixture and IPv4/IPv6 loopback"]
+async fn tls_hostaddr_preserves_verification() -> anyhow::Result<()> {
+    let options = env::var("DATABASE_URL")?
+        .parse::<PgConnectOptions>()?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull);
+
+    for address in ["127.0.0.1", "::1"] {
+        let options = options.clone().hostaddr(address.parse::<IpAddr>()?);
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await?;
+
+        let first: i32 = sqlx::query_scalar("select pg_backend_pid()")
+            .fetch_one(&pool)
+            .await?;
+        pool.acquire().await?.close().await?;
+
+        let second: i32 = sqlx::query_scalar("select pg_backend_pid()")
+            .fetch_one(&pool)
+            .await?;
+        assert_ne!(first, second);
+        pool.close().await;
+
+        // A wrong password ensures certificate rejection happens before authentication.
+        for rejected in [
+            options
+                .clone()
+                .host("wrong.example")
+                .password("placeholder-wrong-password"),
+            options.ssl_root_cert(env::var("SQLX_TEST_UNTRUSTED_CA")?),
+        ] {
+            let error = PgConnection::connect_with(&rejected).await.unwrap_err();
+            assert!(matches!(error, sqlx::Error::Io(cause)
+                if cause.kind() == std::io::ErrorKind::InvalidData));
+        }
+    }
+
     Ok(())
 }
 

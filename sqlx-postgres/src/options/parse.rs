@@ -367,3 +367,15 @@ fn ipv6_url_round_trips() {
         "postgres://username:p%40ssw0rd@[2001:db8::1]:5432/database?sslmode=prefer&statement-cache-capacity=100"
     );
 }
+
+#[test]
+fn clear_hostaddr_keeps_hostname() {
+    let options: PgConnectOptions = "postgres://db.example.com/catalog?hostaddr=192.0.2.10"
+        .parse()
+        .unwrap();
+
+    let options = options.clear_hostaddr();
+
+    assert_eq!(options.get_host(), "db.example.com");
+    assert_eq!(options.hostaddr, None);
+}

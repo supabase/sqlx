@@ -181,6 +181,13 @@ impl PgConnectOptions {
         self
     }
 
+    /// Clears the TCP address override, including one inherited from `PGHOSTADDR`.
+    /// Subsequent TCP connections resolve the configured host.
+    pub fn clear_hostaddr(mut self) -> Self {
+        self.hostaddr = None;
+        self
+    }
+
     /// Sets a custom path to a directory containing a unix domain socket,
     /// switching the connection method from TCP to the corresponding socket.
     ///
