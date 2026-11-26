@@ -10,6 +10,24 @@ const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
 /// Maximum number of sockets being established concurrently.
 const MAX_IN_FLIGHT: usize = 4;
 
+/// Bounds one TCP dial and distinguishes its timeout from later socket I/O.
+pub(super) async fn dial_with_timeout<T>(
+    dial: impl Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    use std::io::{Error, ErrorKind};
+
+    tokio::time::timeout(Duration::from_secs(10), dial)
+        .await
+        .unwrap_or_else(|elapsed| Err(elapsed.into()))
+        .map_err(|error| {
+            if error.kind() == ErrorKind::TimedOut {
+                Error::new(ErrorKind::TimedOut, crate::error::TcpConnectTimeout(error))
+            } else {
+                error
+            }
+        })
+}
+
 /// Interleaves address families without changing the resolver's first preference.
 fn interleave(addresses: &[SocketAddr]) -> VecDeque<SocketAddr> {
     let Some(first) = addresses.first() else {
@@ -99,6 +117,30 @@ mod tests {
     };
 
     use crate::net::socket::staggered::{connect, interleave, ATTEMPT_DELAY, MAX_IN_FLIGHT};
+
+    #[tokio::test(start_paused = true)]
+    async fn marks_both_tcp_dial_timeouts() {
+        use std::io::{Error, ErrorKind};
+
+        use super::dial_with_timeout;
+        use crate::error::TcpConnectTimeout;
+
+        let os_timeout = Error::new(ErrorKind::TimedOut, "socket connect timed out");
+        let native = dial_with_timeout(async { Err::<(), _>(os_timeout) }).await;
+        let deadline = dial_with_timeout(pending::<std::io::Result<()>>()).await;
+
+        for error in [native.unwrap_err(), deadline.unwrap_err()] {
+            assert_eq!(error.kind(), ErrorKind::TimedOut);
+            assert!(error.get_ref().unwrap().is::<TcpConnectTimeout>());
+        }
+
+        let refused =
+            dial_with_timeout(async { Err::<(), _>(ErrorKind::ConnectionRefused.into()) })
+                .await
+                .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::ConnectionRefused);
+        assert!(refused.get_ref().is_none());
+    }
 
     /// Counts owned attempts or successful sockets until they are dropped.
     struct Owned(Arc<AtomicUsize>);
