@@ -200,13 +200,8 @@ pub async fn connect_tcp_staggered<Ws: WithSocket>(
             Err(name) => tokio::net::lookup_host((name, port)).await?.collect(),
         };
 
-        let socket = staggered::connect(&mut addresses, |address| async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                tokio::net::TcpStream::connect(address),
-            )
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP connection timed out"))?
+        let socket = staggered::connect(&mut addresses, |address| {
+            staggered::dial_with_timeout(tokio::net::TcpStream::connect(address))
         })
         .await
         .unwrap_or_else(|| {

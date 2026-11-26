@@ -26,6 +26,14 @@ pub type BoxDynError = Box<dyn StdError + 'static + Send + Sync>;
 #[error("unexpected null; try decoding as an `Option`")]
 pub struct UnexpectedNullError;
 
+/// The TCP socket did not connect before the operating system or driver deadline.
+///
+/// The staggered connector stores this cause inside an [`io::Error`] with
+/// kind [`io::ErrorKind::TimedOut`]. The original I/O error is its source.
+#[derive(Debug, thiserror::Error)]
+#[error("TCP connection timed out")]
+pub struct TcpConnectTimeout(#[source] pub(crate) io::Error);
+
 /// Represents all the ways a method can fail within SQLx.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
